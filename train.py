@@ -18,27 +18,33 @@ from mc_dataset import download_minestudio_datasets,LMDBDecoupledDataset
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
-    ctx_len = cfg.wm.history_size
-    n_preds = cfg.wm.num_preds
+    ctx_len = cfg.wm.history_size    # 值为 3
     lambd = cfg.loss.sigreg.weight
 
-    # Replace NaN values with 0 (occurs at sequence boundaries)
+    # 1. 预处理
     batch["action"] = torch.nan_to_num(batch["action"], 0.0)
-
     output = self.model.encode(batch)
 
-    emb = output["emb"]  # (B, T, D)
+    emb = output["emb"]              # 形状: (B, 50, D)
     act_emb = output["act_emb"]
 
-    ctx_emb = emb[:, :ctx_len]
-    ctx_act = act_emb[:, : ctx_len]
+    # 2. 提取历史 (Context)
+    ctx_emb = emb[:, :ctx_len]       # 取第 0, 1, 2 帧
+    ctx_act = act_emb[:, :ctx_len]
 
-    tgt_emb = emb[:, n_preds:] # label
-    pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
+    # 3. 预测未来
+    # 模型输出 pred_emb 形状为 (B, 3, D)，因为它是基于 ctx_len 生成的
+    pred_emb = self.model.predict(ctx_emb, ctx_act) 
 
-    # LeWM loss
+    # 4. 【核心修复】提取对应的目标值 (Label)
+    # 原代码: tgt_emb = emb[:, n_preds:] -> 导致切出 49 帧
+    # 修正后: 从历史结束的地方开始切，长度与预测步数一致
+    pred_steps = pred_emb.shape[1]   # 动态获取预测步数 (3)
+    tgt_emb = emb[:, ctx_len : ctx_len + pred_steps] # 取第 3, 4, 5 帧
+
+    # 5. 计算损失 (此时维度均为 3，完美匹配)
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
+    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
