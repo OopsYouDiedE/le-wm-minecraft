@@ -9,67 +9,45 @@ import stable_worldmodel as swm
 import torch
 import wandb
 from lightning.pytorch.loggers import WandbLogger
-# 【新增】引入 ModelCheckpoint 用于自动保存权重
-from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import OmegaConf, open_dict
 
 from jepa import JEPA
 from module import ARPredictor, Embedder, MLP, SIGReg
 from utils import get_img_preprocessor, ModelObjectCallBack
 # 【改动 1】移除旧依赖，直接导入我们写的全内存极速 Dataset
-from minestudio_inmemory_dataset import MineStudioInMemoryDataset
+from mc_dataset import MineStudioInMemoryDataset
 
-def setup_wandb_login():
-    """自动从 Colab Secrets 或环境变量中读取 WandB Key 并登录"""
-    api_key = None
-    
-    # 1. 尝试从 Colab 的 Secrets 中读取
-    try:
-        from google.colab import userdata
-        api_key = userdata.get('WANDB_API_KEY')
-        if api_key:
-            print("✅ 成功从 Colab Secrets 读取 WANDB_API_KEY")
-    except ImportError:
-        pass  # 非 Colab 环境
-    except Exception:
-        pass  # Secret 不存在或其他异常
-        
-    # 2. 尝试从环境变量读取
-    if not api_key:
-        api_key = os.environ.get('WANDB_API_KEY')
-        if api_key:
-            print("✅ 成功从环境变量读取 WANDB_API_KEY")
-            
-    # 3. 执行登录或降级为手动
-    if api_key:
-        wandb.login(key=api_key)
-    else:
-        print("⚠️ 未自动检测到 WANDB_API_KEY。若尚未登录，WandB 稍后会阻塞程序并提示您手动输入。")
 
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
-    ctx_len = cfg.wm.history_size
-    n_preds = cfg.wm.num_preds
+    ctx_len = cfg.wm.history_size    # 值为 3
     lambd = cfg.loss.sigreg.weight
 
-    # Replace NaN values with 0 (occurs at sequence boundaries)
+    # 1. 预处理
     batch["action"] = torch.nan_to_num(batch["action"], 0.0)
-
     output = self.model.encode(batch)
 
-    emb = output["emb"]  # (B, T, D)
+    emb = output["emb"]              # 形状: (B, 50, D)
     act_emb = output["act_emb"]
 
-    ctx_emb = emb[:, :ctx_len]
-    ctx_act = act_emb[:, : ctx_len]
+    # 2. 提取历史 (Context)
+    ctx_emb = emb[:, :ctx_len]       # 取第 0, 1, 2 帧
+    ctx_act = act_emb[:, :ctx_len]
 
-    tgt_emb = emb[:, n_preds:] # label
-    pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
+    # 3. 预测未来
+    # 模型输出 pred_emb 形状为 (B, 3, D)，因为它是基于 ctx_len 生成的
+    pred_emb = self.model.predict(ctx_emb, ctx_act) 
 
-    # LeWM loss
+    # 4. 【核心修复】提取对应的目标值 (Label)
+    # 原代码: tgt_emb = emb[:, n_preds:] -> 导致切出 49 帧
+    # 修正后: 从历史结束的地方开始切，长度与预测步数一致
+    pred_steps = pred_emb.shape[1]   # 动态获取预测步数 (3)
+    tgt_emb = emb[:, ctx_len : ctx_len + pred_steps] # 取第 3, 4, 5 帧
+
+    # 5. 计算损失 (此时维度均为 3，完美匹配)
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
+    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1))
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
@@ -134,7 +112,7 @@ def run(cfg):
     # DataLoader 中可以直接开启 shuffle，无任何 I/O 阻塞
     train = torch.utils.data.DataLoader(train_set, **cfg.loader, shuffle=True, drop_last=True, generator=rnd_gen)
     val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
-    
+
     ##############################
     ##       model / optim      ##
     ##############################
@@ -211,9 +189,8 @@ def run(cfg):
 
     logger = None
     if cfg.wandb.enabled:
-        setup_wandb_login()
-        # 【核心修改】开启 log_model="all"，WandbLogger 会自动接管模型并以 Artifact 形式上传至云端
-        logger = WandbLogger(**cfg.wandb.config, log_model="all")
+
+        logger = WandbLogger(**cfg.wandb.config)
         logger.log_hyperparams(OmegaConf.to_container(cfg))
 
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -224,19 +201,9 @@ def run(cfg):
         dirpath=run_dir, filename=cfg.output_model_name, epoch_interval=1,
     )
 
-    # 【修改】不再直接指向 Google Drive，改回本地缓存目录
-    # WandbLogger 会自动监听这个路径，并在本地文件生成后将其异步推送到 WandB 云端
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=run_dir / "checkpoints",              
-        filename=f"{cfg.output_model_name}-{{epoch:02d}}",
-        every_n_epochs=1,                             
-        save_top_k=-1,                                
-        save_weights_only=False                       
-    )
-
     trainer = pl.Trainer(
         **cfg.trainer,
-        callbacks=[object_dump_callback, checkpoint_callback], # 挂载本地回调
+        callbacks=[object_dump_callback],
         num_sanity_val_steps=1,
         logger=logger,
         enable_checkpointing=True,
