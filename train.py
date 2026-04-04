@@ -55,7 +55,7 @@ def run(cfg):
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
-        for col in ["pixels","action"]
+        for col in ["pixels","action"]:
             if col.startswith("pixels"):
                 continue
 
