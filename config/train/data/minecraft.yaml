@@ -3,7 +3,7 @@ downloader:
 dataset:
   base_path: /content/data
   frameskip: 5
-  num_steps: 20
+  num_steps: 16
   load_data: ['action', 'image']
   chunk_size: 32
   
