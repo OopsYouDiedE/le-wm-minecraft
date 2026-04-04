@@ -22,7 +22,7 @@ trainer:
   limit_train_batches: 500 # 👈 新增：每跑 500 个 Batch 就强行算作一个 Epoch 结束！
 
 loader:
-  batch_size: 128           # 👈 从 128 降到 32 或 64
+  batch_size: 64           # 👈 从 128 降到 32 或 64
   num_workers: 11           # 👈 从 6 - 8 降到 2
   prefetch_factor: 4       # 👈 够用了
   persistent_workers: True
