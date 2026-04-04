@@ -3,8 +3,8 @@ downloader:
   dataset_prefixes: ['10xx']
 dataset:
   base_path: /content/data
-  frameskip: 5
-  num_steps: 50
+  frameskip: 4
+  num_steps: 20
   load_data: ['action', 'image']
   chunk_size: 32
   
