@@ -5,7 +5,7 @@ defaults:
 output_model_name: lewm
 subdir: ${hydra:job.id}
 
-num_workers: 2
+num_workers: 8
 train_split: 0.9
 seed: 3072
 img_size: 224
@@ -14,11 +14,12 @@ encoder_scale: tiny
 dump_object: True
 
 trainer:
-  max_epochs: 5
+  max_epochs: 10000
   devices: auto
   accelerator: gpu
   precision: bf16
   gradient_clip_val: 1.0
+  limit_train_batches: 500 # 👈 新增：每跑 500 个 Batch 就强行算作一个 Epoch 结束！
 
 loader:
   batch_size: 32           # 👈 从 128 降到 32 或 64
