@@ -41,7 +41,7 @@ wandb:
     name: ${output_model_name}
     id: ${subdir}
     resume: allow
-    log_model: False
+    log_model: all
 
 wm:
   type: lewm
