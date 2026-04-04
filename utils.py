@@ -21,7 +21,7 @@ def get_column_normalizer(dataset, source: str, target: str):
 
     def norm_fn(x):
         return ((x - mean) / std).float()
-
+    print(mean,std)
     normalizer = dt.transforms.WrapTorchTransform(norm_fn, source=source, target=target)
     return normalizer
 
