@@ -203,7 +203,7 @@ class LMDBDecoupledDataset(Dataset):
                             val = np.array(data)
                             if val.ndim == 1: val = np.expand_dims(val, axis=-1)
                             chunk_data_list.append(val)
-            
+            print(chunk_data_list)
             # 合并块
             full_array = np.concatenate(chunk_data_list, axis=0)
             
