@@ -62,18 +62,8 @@ def run(cfg):
         for col in ["pixels","action"]:
             if col.startswith("pixels"):
                 continue
-            from stable_pretraining import data as dt
-            mean=torch.tensor([[ 5.6792e-01,  1.4301e-02,  7.6506e-03, -9.9500e-03,  2.4808e-04,
-          2.2439e-01,  9.8431e-04,  1.3524e-03,  9.1229e-04,  1.2324e-03,
-          1.2164e-03,  1.0643e-03,  9.5230e-04,  6.8022e-04,  2.0807e-04,
-          5.2497e-03,  5.9483e-02,  2.6240e-02,  4.6759e-02,  6.6597e-02,
-          8.3795e-02,  3.0186e-02]]) 
-            std=torch.tensor([[0.4954, 0.1187, 2.5329, 4.2623, 0.0157, 0.4172, 0.0314, 0.0368, 0.0302,
-         0.0351, 0.0349, 0.0326, 0.0308, 0.0261, 0.0144, 0.0723, 0.2365, 0.1599,
-         0.2111, 0.2493, 0.2771, 0.1711]])
-            def norm_fn(x):
-                return ((x - mean) / std).float()
-            normalizer = dt.transforms.WrapTorchTransform(norm_fn, source=source, target=target)
+
+            normalizer = get_column_normalizer(dataset, col, col)
             transforms.append(normalizer)
 
             setattr(cfg.wm, f"{col}_dim", dataset.get_dim(col))
