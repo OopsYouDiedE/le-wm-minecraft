@@ -15,7 +15,7 @@ from jepa import JEPA
 from module import ARPredictor, Embedder, MLP, SIGReg
 from utils import get_img_preprocessor, ModelObjectCallBack
 # 【改动 1】移除旧依赖，直接导入我们写的全内存极速 Dataset
-from minestudio_inmemory_dataset import MineStudioInMemoryDataset
+from mc_dataset import MineStudioInMemoryDataset
 
 def setup_wandb_login():
     """自动从 Colab Secrets 或环境变量中读取 WandB Key 并登录"""

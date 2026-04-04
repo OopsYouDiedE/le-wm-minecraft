@@ -6,7 +6,7 @@ output_model_name: lewm
 subdir: ${hydra:job.id}
 
 num_workers: 8
-train_split: 0.9999
+train_split: 0.995
 seed: 3072
 img_size: 224
 patch_size: 14
@@ -45,7 +45,7 @@ wandb:
 
 wm:
   type: lewm
-  history_size: 10
+  history_size: 3
   num_preds: 1
   embed_dim: 192
 
