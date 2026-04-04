@@ -51,7 +51,7 @@ wm:
 
 predictor:
   depth: 6
-  heads: 12
+  heads: 16
   mlp_dim: 2048
   dim_head: 64
   dropout: 0.1
