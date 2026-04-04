@@ -13,7 +13,7 @@ from omegaconf import OmegaConf, open_dict
 from jepa import JEPA
 from module import ARPredictor, Embedder, MLP, SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBack
-
+from mc_dataset import download_minestudio_datasets,LMDBDecoupledDataset
 
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
@@ -50,8 +50,8 @@ def run(cfg):
     #########################
     ##       dataset       ##
     #########################
-
-    dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
+    download_minestudio_datasets(**cfg.data.downloader)
+    dataset = LMDBDecoupledDataset(**cfg.data.dataset, transform=None)
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
