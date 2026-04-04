@@ -1,143 +1,48 @@
-import io
-import pickle
-import logging
-import os
-from pathlib import Path
-from typing import Callable, Any, List, Optional
-
-import lmdb
-import av
+import time
+import h5py
 import numpy as np
 import torch
-from huggingface_hub import snapshot_download
+from torch.utils.data import Dataset, DataLoader
 
-from stable_worldmodel.data.dataset import Dataset
-
-
-def download_minestudio_datasets(dataset_prefixes: Optional[List[str]] = None, local_dir: str = '/content/data'):
+class MineStudioInMemoryDataset(Dataset):
     """
-    独立的数据集下载函数。
-    - 如果不填入 dataset_prefixes (如 None 或空列表)，则下载演示数据集 (10xx) 的一小部分 (使用 allow_patterns)。
-    - 如果填入了列表 (例如 ['10xx', '9xx', '6xx'])，则下载列表中对应的完整数据集 (不使用 allow_patterns)。
+    专为大内存机器设计的极致性能 Dataset。
+    一次性将整个 HDF5 文件吞入内存，彻底消除磁盘 I/O 瓶颈。
     """
-    downloaded_dirs = []
-    if not dataset_prefixes:
-        logging.info("未提供数据集列表，默认下载演示数据集 (10xx) 的一小部分...")
-        repo_id = "CraftJarvis/minestudio-data-10xx-v110"
-        target_dir = os.path.join(local_dir, '10xx')
-        allow_patterns = [
-            "action/part-???/**",
-            "image/part-???/**"
-        ]
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            local_dir=target_dir,
-            allow_patterns=allow_patterns
-        )
-        downloaded_dirs.append(target_dir)
-    else:
-        logging.info(f"检测到指定的数据集列表 {dataset_prefixes}，准备下载完整数据...")
-        for prefix in dataset_prefixes:
-            repo_id = f"CraftJarvis/minestudio-data-{prefix}-v110"
-            target_dir = os.path.join(local_dir, '10xx')
-            logging.info(f"正在下载完整数据集: {repo_id} 到 {target_dir}...")
-            snapshot_download(
-                repo_id=repo_id,
-                repo_type="dataset",
-                local_dir=target_dir
-                # 填入了列表，要求下载完整数据集，因此不传入 allow_patterns
-            )
-            downloaded_dirs.append(target_dir)
-    return downloaded_dirs
-
-
-class LMDBDecoupledDataset(Dataset):
-    """
-    针对 MineStudio 数据集优化的解耦 LMDB 加载器。
-    支持跨版本（6xx-10xx）聚合、多模态对齐以及懒加载。
-    """
-
-    def __init__(
-        self,
-        base_path: str | Path = '/content/data',
-        frameskip: int = 1,
-        num_steps: int = 1,
-        load_data: List[str] = ['action', 'image'],
-        transform: Optional[Callable[[dict], dict]] = None,
-        chunk_size: int = 32
-    ) -> None:
-        self.base_path = Path(base_path)
-        self.chunk_size = chunk_size
-        self.load_data = load_data
+    def __init__(self, h5_file_path: str, transform=None):
+        super().__init__()
+        self.h5_file_path = h5_file_path
+        self.transform = transform
         
-        # 1. 构建全局索引与模态对齐 (内部处理 num_frames 和过滤)
-        self.global_map, self.episode_names = self._build_alignment()
-
-        if not self.episode_names:
-            raise ValueError(f"未能在 {self.base_path} 下找到满足要求的完整数据集。")
-
-        # 2. 准备基类所需的 lengths 数组 (每一集的 num_frames)
-        lengths = []
-        for name in self.episode_names:
-            # 默认取第一个模态的长度
-            primary_mod = self.load_data[0]
-            lengths.append(self.global_map[name][primary_mod]['length'])
-
-        lengths = np.array(lengths, dtype=np.int64)
-        offsets = np.concatenate([[0], np.cumsum(lengths)[:-1]])
+        print(f"🚀 开始将全量数据加载到内存中，请稍候...")
+        print(f"📁 目标文件: {self.h5_file_path}")
+        start_time = time.time()
         
-        # 3. 初始化进程内 LMDB 句柄缓存
-        self._envs: dict[str, lmdb.Environment] = {}
-
-        # 4. 初始化基类：这将建立全局帧索引，支持 __getitem__ 的切片
-        super().__init__(lengths, offsets, frameskip, num_steps, transform)
-
-    def _build_alignment(self) -> tuple[dict, list[str]]:
-        """扫描目录、提取 num_frames 并执行模态过滤"""
-        logging.info("🌍 正在扫描 LMDB 目录并构建跨版本索引...")
-        temp_map = {}
-        prefixes = ["6xx", "7xx", "8xx", "9xx", "10xx"]
-
-        for p1 in prefixes:
-            prefix_path = self.base_path / p1
-            if not prefix_path.exists(): continue
+        # ==========================================
+        # 核心逻辑：全量装载进 RAM (使用 [:] 语法)
+        # 警告：这里保持 uint8 和 float16，千万不要全局转换为 float32！
+        # ==========================================
+        with h5py.File(h5_file_path, 'r') as f:
+            # 读取图像数据 (N, 4, 3, 224, 224), 格式: uint8
+            self.pixels = f['pixels'][:]
             
-            for modality in self.load_data:
-                mod_path = prefix_path / modality
-                if not mod_path.exists(): continue
-                
-                for p3 in mod_path.iterdir():
-                    if "part-" not in p3.name or not p3.is_dir(): continue
-                    
-                    try:
-                        # 临时打开 LMDB 读取元数据
-                        env = lmdb.open(str(p3), readonly=True, lock=False)
-                        with env.begin() as txn:
-                            infos = pickle.loads(txn.get(b'__chunk_infos__'))
-                            for info in infos:
-                                ep_id = info['episode']
-                                temp_map.setdefault(ep_id, {})
-                                # 存储模态具体位置和帧长度 (基于你发现的 num_frames)
-                                temp_map[ep_id][modality] = {
-                                    'prefix': p1,
-                                    'part': p3.name,
-                                    'idx': info['episode_idx'],
-                                    'length': info.get('num_frames', 0)
-                                }
-                        env.close()
-                    except Exception as e:
-                        logging.warning(f"跳过损坏的分片 {p3}: {e}")
-                        env.close()
-                        
-
-        # 执行模态补全过滤：必须包含所有请求的 keys
-        required_mods = set(self.load_data)
-        final_map = {
-            k: v for k, v in temp_map.items() 
-            if required_mods.issubset(v.keys())
-        }
+            # 读取离散动作 (N, 15, 20), 格式: uint8
+            self.binary_actions = f['binary_actions'][:]
+            
+            # 读取相机动作 (N, 15, 2), 格式: float16
+            self.camera_actions = f['camera_actions'][:]
+            
+        self.num_samples = len(self.pixels)
+        end_time = time.time()
         
+<<<<<<< HEAD
+        # 计算加载到内存中的实际大小 (GB)
+        mem_gb = (self.pixels.nbytes + self.binary_actions.nbytes + self.camera_actions.nbytes) / (1024**3)
+        
+        print(f"✅ 加载完成! 耗时: {end_time - start_time:.2f} 秒.")
+        print(f"📊 总样本数: {self.num_samples}")
+        print(f"💾 内存占用: 约 {mem_gb:.2f} GB (原生格式)")
+=======
         episode_names = sorted(list(final_map.keys()))
         logging.info(f"✅ 索引构建完成。可用 Episode: {len(episode_names)}")
         return final_map, episode_names
@@ -162,7 +67,12 @@ class LMDBDecoupledDataset(Dataset):
         ep_info = self.global_map[self.episode_names[ep_idx]]
         start_chunk, end_chunk = start // self.chunk_size, (end - 1) // self.chunk_size
         result_steps = {}
+>>>>>>> 43295cb10682989cb8280d9b358184228337e3a5
 
+<<<<<<< HEAD
+    def __len__(self):
+        return self.num_samples
+=======
         for modality in self.load_data:
             meta = ep_info[modality]
             env = self._get_or_open_env(meta['prefix'], modality, meta['part'])
@@ -203,7 +113,11 @@ class LMDBDecoupledDataset(Dataset):
                 tensor = torch.from_numpy(full_array[local_start : local_end]).float()
                 target_len = end - start
                 out_key = modality
+>>>>>>> 43295cb10682989cb8280d9b358184228337e3a5
 
+<<<<<<< HEAD
+    def __getitem__(self, idx):
+=======
             # 强制对齐 (Padding)：解决 DataLoader not resizable 错误
             if tensor.shape[0] < target_len:
                 padding = tensor[-1:].repeat(target_len - tensor.shape[0], *([1] * (tensor.ndim - 1)))
@@ -216,17 +130,32 @@ class LMDBDecoupledDataset(Dataset):
     # ------------------ 适配 stable-worldmodel 的接口 ------------------
 
     def get_col_data(self, col: str) -> np.ndarray:
+>>>>>>> 43295cb10682989cb8280d9b358184228337e3a5
         """
-        获取列数据用于统计。
-        优化：对于大型数据集采用随机抽样，避免启动时长时间卡顿。
+        单条数据的获取逻辑。
+        因为数据已经在内存中，这里的索引操作速度接近光速。
         """
-        if col == 'pixels': 
-            raise MemoryError("严重警告: 禁止一次性加载全量像素数据。请确保配置中 pixels 归一化已关闭。")
+        # 1. 内存极速索引
+        px_np = self.pixels[idx]           # (4, 3, 224, 224)
+        bin_act_np = self.binary_actions[idx]  # (15, 20)
+        cam_act_np = self.camera_actions[idx]  # (15, 2)
         
+<<<<<<< HEAD
+        # 2. 转换为 PyTorch Tensor 并执行升维类型转换 (Type Casting)
+        # 图像转为 float32 并归一化到 [0, 1] 区间（视觉模型通用做法）
+        pixels_tensor = torch.from_numpy(px_np).float() / 255.0
+=======
         # --- 抽样策略配置 ---
         # 经验：对于 110 维动作，抽取 500 个序列或约 20 万帧已足够精准
         max_stats_episodes = 3
+>>>>>>> 43295cb10682989cb8280d9b358184228337e3a5
         
+<<<<<<< HEAD
+        # 动作全部转为 float32 并拼接，形成统一的 22 维动作向量
+        bin_tensor = torch.from_numpy(bin_act_np).float()
+        cam_tensor = torch.from_numpy(cam_act_np).float()
+        action_tensor = torch.cat([bin_tensor, cam_tensor], dim=-1) # (15, 22)
+=======
         all_indices = np.arange(len(self.episode_names))
         if len(all_indices) > max_stats_episodes:
             # 随机挑选索引，保证统计分布的代表性
@@ -318,37 +247,15 @@ def visualize_dataset_slice(dataset, ep_idx, out_name="dataset_verify.mp4"):
         # --- 图像还原 ---
         # 逆转换: [C, H, W] -> [H, W, C]
         img_tensor = pixels[i].permute(1, 2, 0)
+>>>>>>> 43295cb10682989cb8280d9b358184228337e3a5
         
-        # 如果像素被归一化到了 [0, 1] 或 [-1, 1]，需要还原到 [0, 255]
-        img_np = img_tensor.cpu().numpy()
-        if img_np.max() <= 1.1: # 自动检测归一化
-            img_np = (img_np * 255).astype(np.uint8)
-        else:
-            img_np = img_np.astype(np.uint8)
+        batch = {
+            "pixels": pixels_tensor,
+            "action": action_tensor
+        }
+        
+        # 如果你传入了 torchvision 等 Transform，可以在这里应用
+        if self.transform:
+            batch = self.transform(batch)
             
-        # RGB -> BGR (OpenCV)
-        frame = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-
-        # --- 动作还原 ---
-        # 找到对应时间点的动作。注意：图像是 T，动作通常是 T * frameskip
-        # 这里直接取 i * frameskip 对应的原始动作
-        act_idx = i # 如果你在 _load_slice 里对 action 也做了采样，直接用 i
-        # 但通常 stable-worldmodel 期望 action 也是对齐采样后的，
-        # 如果你的 _load_slice 没给 action 做采样，这里需要手动对齐：
-        # act_val = actions[i * dataset.frameskip].numpy() 
-        act_val = actions[i].numpy() # 假设已经对齐
-        
-        act_text = f"Step {i} | Act: {np.round(act_val[:4], 3)}..."
-
-        # --- 绘制信息层 ---
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (W, 25), (0, 0, 0), -1)
-        frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
-        cv2.putText(frame, act_text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-
-        out.write(frame)
-
-    out.release()
-    print(f"✅ 验证视频已生成: {out_name}")
-
-# visualize_dataset_slice(dataset, ep_idx=0, out_name="check_alignment.mp4")
+        return batch

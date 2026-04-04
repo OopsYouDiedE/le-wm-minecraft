@@ -7,13 +7,42 @@ import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
+import wandb
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
 from jepa import JEPA
 from module import ARPredictor, Embedder, MLP, SIGReg
-from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBack
-from mc_dataset import download_minestudio_datasets,LMDBDecoupledDataset
+from utils import get_img_preprocessor, ModelObjectCallBack
+# 【改动 1】移除旧依赖，直接导入我们写的全内存极速 Dataset
+from minestudio_inmemory_dataset import MineStudioInMemoryDataset
+
+def setup_wandb_login():
+    """自动从 Colab Secrets 或环境变量中读取 WandB Key 并登录"""
+    api_key = None
+    
+    # 1. 尝试从 Colab 的 Secrets 中读取
+    try:
+        from google.colab import userdata
+        api_key = userdata.get('WANDB_API_KEY')
+        if api_key:
+            print("✅ 成功从 Colab Secrets 读取 WANDB_API_KEY")
+    except ImportError:
+        pass  # 非 Colab 环境
+    except Exception:
+        pass  # Secret 不存在或其他异常
+        
+    # 2. 尝试从环境变量读取
+    if not api_key:
+        api_key = os.environ.get('WANDB_API_KEY')
+        if api_key:
+            print("✅ 成功从环境变量读取 WANDB_API_KEY")
+            
+    # 3. 执行登录或降级为手动
+    if api_key:
+        wandb.login(key=api_key)
+    else:
+        print("⚠️ 未自动检测到 WANDB_API_KEY。若尚未登录，WandB 稍后会阻塞程序并提示您手动输入。")
 
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
@@ -56,24 +85,48 @@ def run(cfg):
     #########################
     ##       dataset       ##
     #########################
-    download_minestudio_datasets(**cfg.data.downloader)
-    dataset = LMDBDecoupledDataset(**cfg.data.dataset, transform=None)
-    tmp=dataset[0]
     
-    print(tmp['action'].shape)
-    print(tmp['pixels'].shape)
+    # 【改动 2】取消所有多余的预处理、下载流程，一步到位吞入内存
+    h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
+    dataset = MineStudioInMemoryDataset(h5_file_path=h5_path, transform=None)
+    
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
+    # 【改动 3】极速计算 Camera 全局归一化参数 (利用全量内存读取的优势，耗时 < 0.1s)
+    cam_data = torch.from_numpy(dataset.camera_actions).float()
+    cam_mean = cam_data.mean(dim=(0, 1))
+    cam_std = cam_data.std(dim=(0, 1))
+    
+    frameskip = cfg.data.dataset.get('frameskip', 5)
+    
+    # 【核心改动】专属的动作空间处理器
+    class ActionPreProcessor:
+        def __init__(self, mean, std, history_size, f_skip):
+            self.mean = mean
+            self.std = std
+            self.history_size = history_size
+            self.f_skip = f_skip
+
+        def __call__(self, batch):
+            action = batch["action"].clone() # Shape: (15, 22)
+            
+            # A. 仅对 Camera (最后的 2 个维度) 实施 Z-Score 归一化
+            action[..., -2:] = (action[..., -2:] - self.mean) / (self.std + 1e-6)
+            
+            # B. 时序动作打包 (Action Chunking): 
+            # 将扁平的 (15帧, 22维) 重塑为 Transformer 视角的 (3步, 5*22=110维)
+            action = action.contiguous().view(self.history_size, self.f_skip * action.shape[-1])
+            
+            batch["action"] = action
+            return batch
+
+    transforms.append(ActionPreProcessor(cam_mean, cam_std, cfg.wm.history_size, frameskip))
+    
     with open_dict(cfg):
-        for col in ["pixels","action"]:
-            if col.startswith("pixels"):
-                continue
-
-            normalizer = get_column_normalizer(dataset, col, col)
-            transforms.append(normalizer)
-
-            setattr(cfg.wm, f"{col}_dim", dataset.get_dim(col))
-
+        # 强制接管环境参数：写死我们现有的硬核指标，废除多余的自动获取逻辑
+        cfg.wm.action_dim = 22
+        cfg.data.dataset.frameskip = frameskip
+        
     transform = spt.data.transforms.Compose(*transforms)
     dataset.transform = transform
 
@@ -82,7 +135,8 @@ def run(cfg):
         dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
 
-    train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
+    # DataLoader 中可以直接开启 shuffle，无任何 I/O 阻塞
+    train = torch.utils.data.DataLoader(train_set, **cfg.loader, shuffle=True, drop_last=True, generator=rnd_gen)
     val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
 
     ##############################
@@ -99,6 +153,8 @@ def run(cfg):
 
     hidden_dim = encoder.config.hidden_size
     embed_dim = cfg.wm.get("embed_dim", hidden_dim)
+    
+    # 完美对齐： 5 * 22 = 110，这与我们 Transform 中重塑的末位维度一致
     effective_act_dim = cfg.data.dataset.frameskip * cfg.wm.action_dim
 
     predictor = ARPredictor(
@@ -159,6 +215,7 @@ def run(cfg):
 
     logger = None
     if cfg.wandb.enabled:
+        setup_wandb_login()
         logger = WandbLogger(**cfg.wandb.config)
         logger.log_hyperparams(OmegaConf.to_container(cfg))
 
