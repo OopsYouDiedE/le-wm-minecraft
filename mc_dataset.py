@@ -229,17 +229,51 @@ class LMDBDecoupledDataset(Dataset):
     # ------------------ 适配 stable-worldmodel 的接口 ------------------
 
     def get_col_data(self, col: str) -> np.ndarray:
-        """获取全量列数据（通常用于计算动作均值/方差）"""
-        if col == 'pixels': raise MemoryError("禁止一次性加载全量像素数据。")
+        """
+        获取列数据用于统计。
+        优化：对于大型数据集采用随机抽样，避免启动时长时间卡顿。
+        """
+        if col == 'pixels': 
+            raise MemoryError("严重警告: 禁止一次性加载全量像素数据。请确保配置中 pixels 归一化已关闭。")
+        
+        # --- 抽样策略配置 ---
+        # 经验：对于 110 维动作，抽取 500 个序列或约 20 万帧已足够精准
+        max_stats_episodes = 500 
+        
+        all_indices = np.arange(len(self.episode_names))
+        if len(all_indices) > max_stats_episodes:
+            # 随机挑选索引，保证统计分布的代表性
+            sample_indices = np.random.choice(all_indices, max_stats_episodes, replace=False)
+            logging.info(f"📊 数据集规模较大 ({len(all_indices)} eps)，正在随机抽取 {max_stats_episodes} 个序列进行统计...")
+        else:
+            sample_indices = all_indices
+            logging.info(f"📊 正在对全量数据集 ({len(all_indices)} eps) 进行统计...")
+
         all_data = []
-        for i in range(len(self.episode_names)):
-            # 直接提取全长数据
-            data_dict = self._load_slice(i, 0, self.lengths[i])
-            # 注意：stable-world 需要 action 而不是 load_data 里的名字
-            key = 'pixels' if col == 'pixels' else 'action'
-            all_data.append(data_dict[key].numpy())
-            print(self.episode_names[i])
-        return np.concatenate(all_data, axis=0)
+        for i in sample_indices:
+            try:
+                # 调用我们写好的 _load_slice，它已经处理了动作展平
+                data_dict = self._load_slice(i, 0, self.lengths[i])
+                
+                # 兼容性处理：脚本可能请求 'action'，我们也确保返回正确键名
+                key = 'pixels' if col == 'pixels' else 'action'
+                if key not in data_dict:
+                    # 如果键名不匹配，尝试按原始 load_data 寻找
+                    key = col if col in data_dict else list(data_dict.keys())[0]
+                
+                all_data.append(data_dict[key].numpy())
+                
+                # 每读取 50 个打印一次进度，避免刷屏
+                if len(all_data) % 50 == 0:
+                    print(f"   [统计进度] 已读取 {len(all_data)} / {len(sample_indices)} 个序列...")
+                    
+            except Exception as e:
+                logging.warning(f"统计读取跳过 {self.episode_names[i]}: {e}")
+
+        # 合并数据
+        combined_data = np.concatenate(all_data, axis=0)
+        logging.info(f"✅ 统计数据收集完毕，总计样本数: {combined_data.shape[0]} 帧")
+        return combined_data
 
     def get_dim(self, col: str) -> int:
         """探测列维度"""
