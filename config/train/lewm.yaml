@@ -21,9 +21,9 @@ trainer:
   gradient_clip_val: 1.0
 
 loader:
-  batch_size: 64           # 👈 从 128 降到 32 或 64
-  num_workers: 4           # 👈 从 6 - 8 降到 2
-  prefetch_factor: 2       # 👈 够用了
+  batch_size: 32           # 👈 从 128 降到 32 或 64
+  num_workers: 8           # 👈 从 6 - 8 降到 2
+  prefetch_factor: 4       # 👈 够用了
   persistent_workers: True
   pin_memory: True
 
