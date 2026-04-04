@@ -54,8 +54,8 @@ def run(cfg):
     dataset = LMDBDecoupledDataset(**cfg.data.dataset, transform=None)
     tmp=dataset[0]
     
-    print(tmp['action'].shape())
-    print(tmp['pixels'].shape())
+    print(tmp['action'].shape)
+    print(tmp['pixels'].shape)
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
