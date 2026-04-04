@@ -1,6 +1,5 @@
 downloader:
   local_dir: /content/data
-  dataset_prefixes: None
 dataset:
   base_path: /content/data
   frameskip: 5

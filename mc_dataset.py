@@ -125,9 +125,11 @@ class LMDBDecoupledDataset(Dataset):
                                     'idx': info['episode_idx'],
                                     'length': info.get('num_frames', 0)
                                 }
-                        env.close()
+                    env.close()
                     except Exception as e:
                         logging.warning(f"跳过损坏的分片 {p3}: {e}")
+                        env.close()
+                        
 
         # 执行模态补全过滤：必须包含所有请求的 keys
         required_mods = set(self.load_data)
