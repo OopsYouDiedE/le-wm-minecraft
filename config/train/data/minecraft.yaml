@@ -1,8 +1,10 @@
 downloader:
   local_dir: /content/data
+  dataset_prefixes: ['10xx']
 dataset:
   base_path: /content/data
   frameskip: 5
   num_steps: 50
   load_data: ['action', 'image']
   chunk_size: 32
+  
