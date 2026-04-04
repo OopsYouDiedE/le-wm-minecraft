@@ -14,15 +14,15 @@ encoder_scale: tiny
 dump_object: True
 
 trainer:
-  max_epochs: 100
+  max_epochs: 5
   devices: auto
   accelerator: gpu
   precision: bf16
   gradient_clip_val: 1.0
 
 loader:
-  batch_size: 32           # 👈 从 128 降到 32 或 64
-  num_workers: 2           # 👈 从 6 - 8 降到 2
+  batch_size: 128           # 👈 从 128 降到 32 或 64
+  num_workers: 4           # 👈 从 6 - 8 降到 2
   prefetch_factor: 2       # 👈 够用了
   persistent_workers: True
   pin_memory: True
@@ -36,7 +36,7 @@ wandb:
   enabled: True
   config:
     entity: oopsyoudied88-aaa
-    project: my_train1
+    project: my_train2
     name: ${output_model_name}
     id: ${subdir}
     resume: allow
@@ -44,7 +44,7 @@ wandb:
 
 wm:
   type: lewm
-  history_size: 3
+  history_size: 10
   num_preds: 1
   embed_dim: 192
 
