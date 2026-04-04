@@ -37,7 +37,7 @@ wandb:
   enabled: True
   config:
     entity: oopsyoudied88-aaa
-    project: my_train3
+    project: my_train_true1
     name: ${output_model_name}
     id: ${subdir}
     resume: allow
