@@ -62,6 +62,7 @@ def run(cfg):
         for col in ["pixels","action"]:
             if col.startswith("pixels"):
                 continue
+            from stable_pretraining import data as dt
             mean=torch.tensor([[ 5.6792e-01,  1.4301e-02,  7.6506e-03, -9.9500e-03,  2.4808e-04,
           2.2439e-01,  9.8431e-04,  1.3524e-03,  9.1229e-04,  1.2324e-03,
           1.2164e-03,  1.0643e-03,  9.5230e-04,  6.8022e-04,  2.0807e-04,
