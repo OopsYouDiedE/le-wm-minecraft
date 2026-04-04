@@ -238,6 +238,7 @@ class LMDBDecoupledDataset(Dataset):
             # 注意：stable-world 需要 action 而不是 load_data 里的名字
             key = 'pixels' if col == 'pixels' else 'action'
             all_data.append(data_dict[key].numpy())
+            print(self.episode_names[i])
         return np.concatenate(all_data, axis=0)
 
     def get_dim(self, col: str) -> int:
