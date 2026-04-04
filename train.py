@@ -52,6 +52,7 @@ def run(cfg):
     #########################
     download_minestudio_datasets(**cfg.data.downloader)
     dataset = LMDBDecoupledDataset(**cfg.data.dataset, transform=None)
+    print(dataset[0])
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
