@@ -238,7 +238,7 @@ class LMDBDecoupledDataset(Dataset):
         
         # --- 抽样策略配置 ---
         # 经验：对于 110 维动作，抽取 500 个序列或约 20 万帧已足够精准
-        max_stats_episodes = 500 
+        max_stats_episodes = 10 
         
         all_indices = np.arange(len(self.episode_names))
         if len(all_indices) > max_stats_episodes:
@@ -264,7 +264,7 @@ class LMDBDecoupledDataset(Dataset):
                 all_data.append(data_dict[key].numpy())
                 
                 # 每读取 50 个打印一次进度，避免刷屏
-                if len(all_data) % 50 == 0:
+                if len(all_data) % 5 == 0:
                     print(f"   [统计进度] 已读取 {len(all_data)} / {len(sample_indices)} 个序列...")
                     
             except Exception as e:
