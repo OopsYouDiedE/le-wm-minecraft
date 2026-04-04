@@ -81,10 +81,10 @@ def run(cfg):
     train_set, val_set = spt.data.random_split(
         dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
-    print('数据集划分完毕1')
+
     train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
     val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
-    print('数据集划分完毕2')
+
     ##############################
     ##       model / optim      ##
     ##############################

@@ -157,74 +157,59 @@ class LMDBDecoupledDataset(Dataset):
                 stream = container.streams.video[0]
                 frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(stream)]
         return np.stack(frames)
+    
     def _load_slice(self, ep_idx: int, start: int, end: int) -> dict:
-        """
-        核心加载方法：
-        - 仅对 'image' 进行视频解码、frameskip 和维度转换 [T,C,H,W]。
-        - 对其他模态（如 action）仅进行数据提取、字典展平与维度对齐，不进行采样变动。
-        """
-        ep_name = self.episode_names[ep_idx]
-        ep_info = self.global_map[ep_name]
-
-        # 1. 确定 Chunk 范围
-        start_chunk = start // self.chunk_size
-        end_chunk = (end - 1) // self.chunk_size
-        
+        ep_info = self.global_map[self.episode_names[ep_idx]]
+        start_chunk, end_chunk = start // self.chunk_size, (end - 1) // self.chunk_size
         result_steps = {}
 
         for modality in self.load_data:
             meta = ep_info[modality]
             env = self._get_or_open_env(meta['prefix'], modality, meta['part'])
-            
             chunk_data_list = []
+
             with env.begin() as txn:
                 for c_offset in range(start_chunk * self.chunk_size, (end_chunk + 1) * self.chunk_size, self.chunk_size):
-                    key = f"({meta['idx']}, {c_offset})".encode('utf-8')
-                    raw_bytes = txn.get(key)
-                    if raw_bytes is None: break
+                    raw_bytes = txn.get(f"({meta['idx']}, {c_offset})".encode('utf-8'))
+                    if not raw_bytes: break
                     
-                    # --- 核心逻辑分歧点 ---
                     if modality == 'image':
-                        # 只有图像进行视频解码
-                        decoded = self._decode_video_chunk(raw_bytes)
-                        chunk_data_list.append(decoded)
+                        chunk_data_list.append(self._decode_video_chunk(raw_bytes))
                     else:
-                        # 其他模态（如 action）使用 pickle 加载
                         data = pickle.loads(raw_bytes)
                         if isinstance(data, dict):
-                            # 处理字典：展平并强制升维以保证 concatenate 成功
-                            step_acts = []
-                            for k in sorted(data.keys()):
-                                val = np.array(data[k])
-                                if val.ndim == 1: val = np.expand_dims(val, axis=-1)
-                                step_acts.append(val)
-                            chunk_data_list.append(np.concatenate(step_acts, axis=-1))
+                            vals = [np.expand_dims(data[k], -1) if np.ndim(data[k]) == 1 else np.array(data[k]) for k in sorted(data.keys())]
+                            chunk_data_list.append(np.concatenate(vals, axis=-1))
                         else:
                             val = np.array(data)
-                            if val.ndim == 1: val = np.expand_dims(val, axis=-1)
-                            chunk_data_list.append(val)
-            # 合并块
-            try:
-                full_array = np.concatenate(chunk_data_list, axis=0)
-            except:
-                print("出错了，强制取样开头")
-                return self._load_slice(ep_idx, 0, end-start)
-            # 计算局部切片索引
-            local_start = start - start_chunk * self.chunk_size
+                            chunk_data_list.append(np.expand_dims(val, -1) if val.ndim == 1 else val)
+
+            # 兜底：如果完全没有数据，回退到开头
+            if not chunk_data_list:
+                return self._load_slice(ep_idx, 0, end - start)
+
+            full_array = np.concatenate(chunk_data_list, axis=0)
+            local_start = start % self.chunk_size
             local_end = local_start + (end - start)
-            
-            # --- 结果处理分歧点 ---
+
+            # 切片与维度处理
             if modality == 'image':
-                # 【变动项】：执行 frameskip 和维度置换
-                sliced = full_array[local_start : local_end : self.frameskip]
-                tensor = torch.from_numpy(sliced)
-                if tensor.ndim == 4: # [T, H, W, C] -> [T, C, H, W]
+                tensor = torch.from_numpy(full_array[local_start : local_end : self.frameskip])
+                if tensor.ndim == 4: 
                     tensor = tensor.permute(0, 3, 1, 2)
-                result_steps['pixels'] = tensor
+                target_len = (end - start + self.frameskip - 1) // self.frameskip
+                out_key = 'pixels'
             else:
-                # 【不变项】：不执行 frameskip，原样返回（仅转为 Tensor）
-                sliced = full_array[local_start : local_end]
-                result_steps[modality] = torch.from_numpy(sliced).float()
+                tensor = torch.from_numpy(full_array[local_start : local_end]).float()
+                target_len = end - start
+                out_key = modality
+
+            # 强制对齐 (Padding)：解决 DataLoader not resizable 错误
+            if tensor.shape[0] < target_len:
+                padding = tensor[-1:].repeat(target_len - tensor.shape[0], *([1] * (tensor.ndim - 1)))
+                tensor = torch.cat([tensor, padding], dim=0)
+
+            result_steps[out_key] = tensor
 
         return self.transform(result_steps) if self.transform else result_steps
 
