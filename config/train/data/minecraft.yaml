@@ -2,6 +2,7 @@ downloader:
   local_dir: /content/data
 dataset:
   base_path: /content/data
+  h5_file_path: /content/data/data_0001.h5
   frameskip: 5
   num_steps: 16
   load_data: ['action', 'image']
