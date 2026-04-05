@@ -36,11 +36,12 @@ def get_episodes_length(dataset, episodes):
     return np.array(lengths)
 
 def get_dataset(cfg, dataset_name):
-    dataset_path = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
+    # 【修改逻辑】：强制指向你实际的数据集路径
+    cache_dir = Path("/content/data")
     dataset = swm.data.HDF5Dataset(
-        dataset_name,
+        "data_0001.h5",
         keys_to_cache=cfg.dataset.keys_to_cache,
-        cache_dir=dataset_path,
+        cache_dir=cache_dir,
     )
     return dataset
 
@@ -90,27 +91,42 @@ def run(cfg: DictConfig):
     col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
     ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
 
+    # ---------------------------------------------------------
+    # 【对齐训练逻辑】：直接读取 /content/data/data_0001.h5 获取全局统计算法
+    # ---------------------------------------------------------
+    try:
+        # 引入你写的全内存类，保证底层矩阵读取的均值与训练时一模一样
+        from minestudio_inmemory_dataset import MineStudioInMemoryDataset
+        h5_file_path = "/content/data/data_0001.h5"
+        in_memory_dataset = MineStudioInMemoryDataset(h5_file_path=h5_file_path, transform=None)
+        
+        cam_data = torch.from_numpy(in_memory_dataset.camera_actions).float()
+        # 转换为 numpy，方便 solver 进行 ndarray 计算
+        cam_mean = cam_data.mean(dim=(0, 1)).numpy()
+        cam_std = cam_data.std(dim=(0, 1)).numpy()
+    except ImportError:
+        # 如果 eval 脚本所在环境无法导入该类，则降级使用常规抽取计算
+        action_data = stats_dataset.get_col_data("action")
+        action_data = action_data[~np.isnan(action_data).any(axis=1)]
+        cam_data = action_data[:, -2:]
+        cam_mean = np.mean(cam_data, axis=0)
+        cam_std = np.std(cam_data, axis=0)
+        
+    print("==================================================")
+    print("[*] 动作预处理器加载完毕: 仅标准化末尾 2 维 (Camera)")
+    print(f"[*] 来源数据集: /content/data/data_0001.h5")
+    print(f"[*] cam_mean: {cam_mean}")
+    print(f"[*] cam_std:  {cam_std}")
+    print("==================================================")
+
     process = {}
     for col in cfg.dataset.keys_to_cache:
         if col in ["pixels"]:
             continue
         
-        # ---------------------------------------------------------
-        # 【修改逻辑】：拦截 "action" 列，应用定制的局部归一化
-        # ---------------------------------------------------------
         if col == "action":
-            action_data = stats_dataset.get_col_data(col)
-            action_data = action_data[~np.isnan(action_data).any(axis=1)]
-            
-            # 提取最后两维 (Camera 维度) 计算均值和方差
-            cam_data = action_data[:, -2:]
-            cam_mean = np.mean(cam_data, axis=0)
-            cam_std = np.std(cam_data, axis=0)
-            
-            # 注入我们自定义的处理器
+            # 注入计算好的处理器
             process[col] = CustomActionProcessor(cam_mean, cam_std)
-            print(f"[*] 动作预处理器加载完毕: 仅标准化末尾2维。Mean: {cam_mean}, Std: {cam_std}")
-            
         else:
             # 对于其他状态向量（如果有），保留原有的 StandardScaler
             processor = preprocessing.StandardScaler()
