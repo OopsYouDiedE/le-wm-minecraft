@@ -4,7 +4,6 @@ defaults:
   - data: minecraft
   - _self_
 
-# --- 全局基础配置 ---
 num_workers: 8
 train_split: 0.995
 seed: 3072
@@ -12,17 +11,15 @@ img_size: 224
 patch_size: 14
 encoder_scale: tiny
 dump_object: True
-policy: random # ckpt name or random
 
-# --- 环境配置 ---
+
 world:
   env_name: swm/PushT-v1
   num_envs: ${eval.num_eval}
-  max_episode_steps: 100 # 根据 eval_budget 自动调整
+  max_episode_steps: ??? # make sure it's >= eval_budget
   history_size: 3
   frame_skip: 5
 
-# --- 数据集缓存配置 ---
 dataset:
   stats: ${eval.dataset_name}
   keys_to_cache:
@@ -30,7 +27,10 @@ dataset:
     - proprio
     - state
 
-# --- 实验监控 ---
+seed: 42
+policy: random # ckpt name or random
+
+
 wandb:
   enabled: True
   config:
@@ -40,15 +40,12 @@ wandb:
     id: ${subdir}
     resume: allow
     log_model: all
-
-# --- 世界模型 (World Model) 架构 ---
 wm:
   type: lewm
   history_size: 3
   num_preds: 1
   embed_dim: 192
 
-# --- 预测器 (Predictor) 配置 ---
 predictor:
   depth: 6
   heads: 16
@@ -57,7 +54,6 @@ predictor:
   dropout: 0.1
   emb_dropout: 0.0
 
-# --- 损失函数配置 ---
 loss:
   sigreg:
     weight: 0.09
@@ -65,13 +61,12 @@ loss:
       knots: 17
       num_proj: 1024
 
-# --- 规划器 (Planning) 配置 ---
 plan_config:
-  horizon: 5
-  receding_horizon: 5
-  action_block: 5 # 对应 frameskip
+  horizon: 1
+  receding_horizon: 1
+  action_block: 5 # frameskip
 
-# --- 评估任务设置 (离线推演专家轨迹) ---
+# evaluation from dataset (replay expert trajectories)
 eval:
   num_eval: 50
   goal_offset_steps: 25
@@ -79,15 +74,16 @@ eval:
   img_size: 224
   dataset_name: pusht_expert_train
   callables:
+    # -- set state
     - method: _set_state
       args:
         state:
           value: state
+    # -- set goal state
     - method: _set_goal_state
       args:
         goal_state:
           value: goal_state
-
-# --- 输出设置 ---
+          
 output:
   filename: pusht_results.txt
