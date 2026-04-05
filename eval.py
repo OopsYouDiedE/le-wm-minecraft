@@ -97,7 +97,7 @@ def run(cfg: DictConfig):
     try:
         # 引入你写的全内存类，保证底层矩阵读取的均值与训练时一模一样
         from minestudio_inmemory_dataset import MineStudioInMemoryDataset
-        h5_file_path = "/content/data/data_0001.h5"
+        h5_file_path = "/content/data/data_0001"
         in_memory_dataset = MineStudioInMemoryDataset(h5_file_path=h5_file_path, transform=None)
         
         cam_data = torch.from_numpy(in_memory_dataset.camera_actions).float()
