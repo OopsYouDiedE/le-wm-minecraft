@@ -37,10 +37,9 @@ def get_episodes_length(dataset, episodes):
     return np.array(lengths)
 
 def get_dataset(cfg, dataset_name):
-    # 【修改逻辑】：使用与 train.py 完全相同的动态路径获取方式
-    h5_path = "/content/data/data_0001"
+    # 【动态路径】：使用与 train.py 完全相同的动态路径获取方式
+    h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
     
-    # 动态解析缓存目录与文件名
     cache_dir = Path(h5_path).parent if Path(h5_path).parent.name else Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
     file_name = Path(h5_path).name
     
@@ -52,25 +51,20 @@ def get_dataset(cfg, dataset_name):
     return dataset
 
 # ==========================================
-# 【核心修复区】：专为你的 Train 脚本定制的动作处理器
+# 【定制区】：专为你的 Train 脚本定制的动作处理器
 # ==========================================
 class CustomActionProcessor:
-    """
-    仅对动作向量的最后两维（Camera 的 Pitch 和 Yaw）进行标准化。
-    兼容 sklearn 的 transform 和 inverse_transform API，供 Solver 规划时调用。
-    """
+    """仅对动作向量的最后两维（Camera 的 Pitch 和 Yaw）进行 Z-Score 标准化。"""
     def __init__(self, mean, std):
         self.mean = mean
         self.std = std
 
     def transform(self, action):
-        # 规划器前向预测时调用
         act = action.copy() if isinstance(action, np.ndarray) else action.clone()
         act[..., -2:] = (act[..., -2:] - self.mean) / (self.std + 1e-6)
         return act
 
     def inverse_transform(self, action):
-        # 规划器将预测的动作发送给真实 Minecraft 环境前调用
         act = action.copy() if isinstance(action, np.ndarray) else action.clone()
         act[..., -2:] = act[..., -2:] * (self.std + 1e-6) + self.mean
         return act
@@ -82,10 +76,6 @@ def run(cfg: DictConfig):
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "规划视野(Horizon)必须小于或等于评估预算"
 
-    # 【已被移除】：移除了所有与 swm.World 相关的初始化和 cfg 注入逻辑
-    # 现已完全脱离黑盒环境依赖
-
-    # 创建图像转换器
     transform = {
         "pixels": img_transform(cfg),
         "goal": img_transform(cfg),
@@ -97,20 +87,16 @@ def run(cfg: DictConfig):
     ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
 
     # ---------------------------------------------------------
-    # 【对齐训练逻辑】：动态读取数据集获取全局统计算法
+    # 【对齐训练】：计算/获取全局 Camera 统计特征
     # ---------------------------------------------------------
     h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
     try:
-        # 引入你写的全内存类，保证底层矩阵读取的均值与训练时一模一样
         from minestudio_inmemory_dataset import MineStudioInMemoryDataset
         in_memory_dataset = MineStudioInMemoryDataset(h5_file_path=h5_path, transform=None)
-        
         cam_data = torch.from_numpy(in_memory_dataset.camera_actions).float()
-        # 转换为 numpy，方便 solver 进行 ndarray 计算
         cam_mean = cam_data.mean(dim=(0, 1)).numpy()
         cam_std = cam_data.std(dim=(0, 1)).numpy()
     except ImportError:
-        # 如果 eval 脚本所在环境无法导入该类，则降级使用常规抽取计算
         action_data = stats_dataset.get_col_data("action")
         action_data = action_data[~np.isnan(action_data).any(axis=1)]
         cam_data = action_data[:, -2:]
@@ -130,10 +116,8 @@ def run(cfg: DictConfig):
             continue
         
         if col == "action":
-            # 注入计算好的处理器
             process[col] = CustomActionProcessor(cam_mean, cam_std)
         else:
-            # 对于其他状态向量（如果有），保留原有的 StandardScaler
             processor = preprocessing.StandardScaler()
             col_data = stats_dataset.get_col_data(col)
             col_data = col_data[~np.isnan(col_data).any(axis=1)]
@@ -144,18 +128,49 @@ def run(cfg: DictConfig):
             process[f"goal_{col}"] = process[col]
 
     # -- 开始加载模型并执行规划
-    policy = cfg.get("policy", "random")
+    policy_type = cfg.get("policy", "random")
 
-    if policy != "random":
-        # 加载我们在 WandB 跑出来的预测器模型
-        model = swm.policy.AutoCostModel(cfg.policy)
+    if policy_type != "random":
+        # =========================================================================
+        # 【新增功能】：从 WandB 自动下载模型并用于 Eval 推演
+        # =========================================================================
+        wandb_artifact_path = "oopsyoudied88-aaa/my_train_true1/model-njde34z4:v33"
+        print("==================================================")
+        print(f"[*] 正在连接 WandB，请求 Eval 模型: {wandb_artifact_path} ...")
+        
+        target_ckpt = None
+        try:
+            import wandb
+            api = wandb.Api()
+            artifact = api.artifact(wandb_artifact_path)
+            # 下载到系统缓存目录
+            download_dir = Path(swm.data.utils.get_cache_dir()) / "wandb_artifacts"
+            artifact_dir = artifact.download(root=str(download_dir))
+            
+            # 自动搜索刚下好的 .ckpt
+            ckpt_files = list(Path(artifact_dir).glob("*.ckpt")) + list(Path(artifact_dir).glob("*.pth"))
+            
+            if ckpt_files:
+                target_ckpt = str(ckpt_files[0])
+                print(f"[*] 成功找到权重文件，准备挂载: {target_ckpt}")
+            else:
+                print("[-] 警告: 下载的文件中未发现 .ckpt 或 .pth 模型！")
+        except Exception as e:
+            print(f"[-] 从 WandB 加载模型失败，降级使用 cfg 配置路径。错误: {e}")
+        print("==================================================")
+
+        # 动态覆盖加载路径：如果 WandB 下载成功就用新的，否则回退
+        model_load_path = target_ckpt if target_ckpt else str(cfg.policy)
+        
+        # 将刚下载的模型路径喂给 AutoCostModel
+        model = swm.policy.AutoCostModel(model_load_path)
         model = model.to("cuda")
         model = model.eval()
         model.requires_grad_(False)
         model.interpolate_pos_encoding = True
         
         config = swm.PlanConfig(**cfg.plan_config)
-        # 这里实例化的就是 CEMSolver 或者 GradientSolver
+        # 实例化 CEMSolver 或者 GradientSolver
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         
         policy = swm.policy.WorldModelPolicy(
@@ -164,9 +179,15 @@ def run(cfg: DictConfig):
     else:
         policy = swm.policy.RandomPolicy()
 
+    # 安全地构造保存结果的目录
+    try:
+        policy_str = str(cfg.policy) if cfg.policy else "random"
+    except Exception:
+        policy_str = "random"
+        
     results_path = (
-        Path(swm.data.utils.get_cache_dir(), cfg.policy).parent
-        if cfg.policy != "random"
+        Path(swm.data.utils.get_cache_dir(), policy_str).parent
+        if policy_type != "random"
         else Path(__file__).parent
     )
 
@@ -199,10 +220,10 @@ def run(cfg: DictConfig):
     start_time = time.time()
     
     # =================================================================
-    # 【核心沙盘推演环节】：自定义离线规划循环，替代 world.evaluate_from_dataset
+    # 【自定义沙盘推演环节】：直接使用起点和终点测试模型，跳过烦人的环境黑盒
     # =================================================================
     print("==================================================")
-    print("[*] 已脱离 swm.World，启动完全自定义的离线规划推演...")
+    print("[*] 启动潜空间规划 (Latent Planning) 引擎推演...")
     print("==================================================")
     
     metrics = {"success": [], "planning_time": []}
@@ -210,7 +231,6 @@ def run(cfg: DictConfig):
     if hasattr(policy, "reset"):
         policy.reset()
 
-    # 仅取前几个用于快速验证规划器是否跑通
     eval_limit = min(len(eval_episodes), cfg.eval.num_eval)
     
     for i in range(eval_limit):
@@ -218,15 +238,13 @@ def run(cfg: DictConfig):
         start_idx = eval_start_idx[i]
         goal_idx = start_idx + cfg.eval.goal_offset_steps
         
-        print(f"[*] 正在评估 第 {i+1}/{eval_limit} 个片段 (Episode: {ep_id}, Start: {start_idx} -> Goal: {goal_idx})")
+        print(f"[*] Episode {ep_id} | 尝试从 Frame {start_idx} 规划至 Frame {goal_idx} ...")
         
         try:
-            # 从 HDF5 提取图像数据
             start_data = dataset.get_row_data(np.array([start_idx]))
             goal_data = dataset.get_row_data(np.array([goal_idx]))
             
-            # 构造 Policy 需要的 obs 字典
-            # 这里假设提取出来的 pixels 能够直接兼容 transform 的要求
+            # 向规划器提供 "现在" 与 "未来目标"
             obs = {
                 "pixels": start_data["pixels"][0],
                 "goal": goal_data["pixels"][0]
@@ -234,18 +252,17 @@ def run(cfg: DictConfig):
             
             step_start_time = time.time()
             
-            # 执行潜空间规划！这句代码会调用 CEM 或者 Gradient Solver
+            # 【执行规划】调用你的 CEMSolver
             action = policy(obs)
             
             plan_time = time.time() - step_start_time
             metrics["success"].append(1)
             metrics["planning_time"].append(plan_time)
             
-            # 输出规划结果 (只打印部分维度防止刷屏)
             if isinstance(action, np.ndarray) or isinstance(action, torch.Tensor):
-                print(f"    [+] 规划成功! 耗时: {plan_time:.2f}s, 求解器输出动作形状: {action.shape}")
+                print(f"    [+] 成功! 耗时 {plan_time:.2f}s | 输出动作阵列维度: {action.shape}")
             else:
-                print(f"    [+] 规划成功! 耗时: {plan_time:.2f}s, 输出类型: {type(action)}")
+                print(f"    [+] 成功! 耗时 {plan_time:.2f}s")
                 
         except Exception as e:
             metrics["success"].append(0)
@@ -259,21 +276,17 @@ def run(cfg: DictConfig):
     
     end_time = time.time()
     print("==================================================")
+    print(f"推演总耗时: {end_time - start_time:.2f} 秒")
     print(f"最终评估指标: {metrics_summary}")
     print("==================================================")
 
-    # 保存结果日志
-    results_path = results_path / cfg.output.filename
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with results_path.open("a") as f:
-        f.write("\n")
-        f.write("==== CONFIG ====\n")
-        f.write(OmegaConf.to_yaml(cfg))
-        f.write("\n")
-        f.write("==== RESULTS ====\n")
-        f.write(f"metrics: {metrics_summary}\n")
-        f.write(f"evaluation_time: {end_time - start_time} seconds\n")
+    # 结果写入日志
+    if getattr(cfg.output, 'filename', None):
+        results_path = results_path / cfg.output.filename
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        with results_path.open("a") as f:
+            f.write("\n==== RESULTS ====\n")
+            f.write(f"metrics: {metrics_summary}\n")
 
 if __name__ == "__main__":
     run()
