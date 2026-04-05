@@ -181,7 +181,7 @@ def run_test(cfg):
                 goal=goal_latent
                 info_data={
                     'emb':goal_latent,
-                    'act_emb':current_latent,
+                    'act_emb':initial_obs_emb,
                 }
                 # 传入初始 latent 和目标 latent 进行规划
                 best_actions = solver.solve(info_data)
