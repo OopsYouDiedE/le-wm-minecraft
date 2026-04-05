@@ -160,7 +160,6 @@ def run_test(cfg):
             
             # A. 编码样本获取 Latents
             output = world_model.encode(batch)
-            print(output)
             full_emb = output["emb"]  # (1, 50, D)
             
             # B. 准备规划输入
@@ -177,42 +176,40 @@ def run_test(cfg):
             # 这里的 solve 逻辑取决于 stable_worldmodel 具体实现
             # 我们假设 solver 需要目标特征来计算 cost
             start_time = time.time()
-            try:
-                goal=goal_latent
-                info_data={
-                    'emb':goal_latent,
-                    'act_emb':initial_obs_emb,
-                }
-                # 传入初始 latent 和目标 latent 进行规划
-                best_actions = solver.solve(info_data)
-                duration = time.time() - start_time
-                
-                # D. 验证规划结果
-                # 用最优动作跑一遍模型预测
-                planned_act_emb = world_model.action_encoder(best_actions.unsqueeze(0))
-                predicted_latents = world_model.predict(initial_obs_emb, planned_act_emb)
-                
-                # 最后一帧预测与目标的距离
-                final_predicted_latent = predicted_latents[:, -1]
-                dist_to_goal = (final_predicted_latent - goal_latent).pow(2).mean()
-                
-                # 原始数据集动作产生的距离 (Baseline)
-                gt_actions = batch["action"] # (1, 3, 110)
-                gt_act_emb = world_model.action_encoder(gt_actions)
-                gt_predicted_latents = world_model.predict(initial_obs_emb, gt_act_emb)
-                gt_dist = (gt_predicted_latents[:, -1] - goal_latent).pow(2).mean()
 
-                print(f"  - 规划耗时: {duration:.4f}s")
-                print(f"  - 规划预测 MSE (到目标): {dist_to_goal.item():.6f}")
-                print(f"  - 数据集动作 MSE (Baseline): {gt_dist.item():.6f}")
-                
-                if dist_to_goal < gt_dist:
-                    print("  - 结果: 规划动作比数据集原始动作更接近目标特征。")
-                else:
-                    print("  - 结果: 数据集动作表现更好（或规划器采样不足）。")
+            goal=goal_latent
+            info_data={
+                'emb':goal_latent,
+                'act_emb':initial_obs_emb,
+            }
+            # 传入初始 latent 和目标 latent 进行规划
+            best_actions = solver.solve(info_data)
+            duration = time.time() - start_time
+            
+            # D. 验证规划结果
+            # 用最优动作跑一遍模型预测
+            planned_act_emb = world_model.action_encoder(best_actions.unsqueeze(0))
+            predicted_latents = world_model.predict(initial_obs_emb, planned_act_emb)
+            
+            # 最后一帧预测与目标的距离
+            final_predicted_latent = predicted_latents[:, -1]
+            dist_to_goal = (final_predicted_latent - goal_latent).pow(2).mean()
+            
+            # 原始数据集动作产生的距离 (Baseline)
+            gt_actions = batch["action"] # (1, 3, 110)
+            gt_act_emb = world_model.action_encoder(gt_actions)
+            gt_predicted_latents = world_model.predict(initial_obs_emb, gt_act_emb)
+            gt_dist = (gt_predicted_latents[:, -1] - goal_latent).pow(2).mean()
 
-            except Exception as e:
-                print(f"  - 规划过程出错: {e}")
+            print(f"  - 规划耗时: {duration:.4f}s")
+            print(f"  - 规划预测 MSE (到目标): {dist_to_goal.item():.6f}")
+            print(f"  - 数据集动作 MSE (Baseline): {gt_dist.item():.6f}")
+            
+            if dist_to_goal < gt_dist:
+                print("  - 结果: 规划动作比数据集原始动作更接近目标特征。")
+            else:
+                print("  - 结果: 数据集动作表现更好（或规划器采样不足）。")
+
 
     print("\n测试脚本执行完毕。")
 
