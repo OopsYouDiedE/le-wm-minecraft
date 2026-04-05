@@ -146,7 +146,7 @@ def run_test(cfg):
 
     print(f"初始化 Solver: {cfg.solver._target_}")
     solver = hydra.utils.instantiate(cfg.solver, model=world_model)
-
+    solver._env=5
     # --- 5. 执行规划测试 ---
     print("\n--- 开始基于打散数据的规划测试 ---")
     num_test_samples = 5
