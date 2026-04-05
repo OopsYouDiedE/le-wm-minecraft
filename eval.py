@@ -83,7 +83,7 @@ def run_test(cfg):
             return batch
 
     transforms = [
-        get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size),
+        get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.eval.img_size),
         ActionPreProcessor(cam_mean, cam_std, cfg.wm.history_size, frameskip)
     ]
     dataset.transform = spt.data.transforms.Compose(*transforms)
