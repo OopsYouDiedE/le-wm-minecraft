@@ -52,7 +52,7 @@ def load_wandb_model(artifact_path, model_instance, device="cuda"):
     run.finish()
     return model_instance
 
-@hydra.main(version_base=None, config_path="./config/train", config_name="lewm")
+@hydra.main(version_base=None, config_path="./config/eval", config_name="minecraft")
 def run_test(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

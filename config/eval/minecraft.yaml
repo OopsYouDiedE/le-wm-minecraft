@@ -1,6 +1,7 @@
 defaults:
   - launcher: local
   - solver: cem
+  - data: minecraft
   - _self_
 
 world:
@@ -19,6 +20,37 @@ dataset:
 
 seed: 42
 policy: random # ckpt name or random
+
+
+wandb:
+  enabled: True
+  config:
+    entity: oopsyoudied88-aaa
+    project: my_train_true1
+    name: ${output_model_name}
+    id: ${subdir}
+    resume: allow
+    log_model: all
+wm:
+  type: lewm
+  history_size: 3
+  num_preds: 1
+  embed_dim: 192
+
+predictor:
+  depth: 6
+  heads: 16
+  mlp_dim: 2048
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+loss:
+  sigreg:
+    weight: 0.09
+    kwargs:
+      knots: 17
+      num_proj: 1024
 
 plan_config:
   horizon: 5
