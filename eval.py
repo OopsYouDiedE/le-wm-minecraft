@@ -160,6 +160,7 @@ def run_test(cfg):
             
             # A. 编码样本获取 Latents
             output = world_model.encode(batch)
+            print(output)
             full_emb = output["emb"]  # (1, 50, D)
             
             # B. 准备规划输入
@@ -177,8 +178,13 @@ def run_test(cfg):
             # 我们假设 solver 需要目标特征来计算 cost
             start_time = time.time()
             try:
+                goal=goal_latent
+                info_data={
+                    'emb':goal_latent,
+                    'act_emb':current_latent,
+                }
                 # 传入初始 latent 和目标 latent 进行规划
-                best_actions = solver.solve(initial_obs_emb, goal=goal_latent)
+                best_actions = solver.solve(info_data)
                 duration = time.time() - start_time
                 
                 # D. 验证规划结果
