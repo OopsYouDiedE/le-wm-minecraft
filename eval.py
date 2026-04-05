@@ -38,7 +38,7 @@ def get_episodes_length(dataset, episodes):
 
 def get_dataset(cfg, dataset_name):
     # 【修改逻辑】：使用与 train.py 完全相同的动态路径获取方式
-    h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
+    h5_path = "/content/data/data_0001"
     
     # 动态解析缓存目录与文件名
     cache_dir = Path(h5_path).parent if Path(h5_path).parent.name else Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
