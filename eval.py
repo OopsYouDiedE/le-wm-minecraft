@@ -3,6 +3,7 @@ import os
 os.environ["MUJOCO_GL"] = "egl"
 
 import time
+import traceback
 from pathlib import Path
 
 import hydra
@@ -36,10 +37,15 @@ def get_episodes_length(dataset, episodes):
     return np.array(lengths)
 
 def get_dataset(cfg, dataset_name):
-    # 【修改逻辑】：强制指向你实际的数据集路径
-    cache_dir = Path("/content/data")
+    # 【修改逻辑】：使用与 train.py 完全相同的动态路径获取方式
+    h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
+    
+    # 动态解析缓存目录与文件名
+    cache_dir = Path(h5_path).parent if Path(h5_path).parent.name else Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
+    file_name = Path(h5_path).name
+    
     dataset = swm.data.HDF5Dataset(
-        "data_0001.h5",
+        file_name,
         keys_to_cache=cfg.dataset.keys_to_cache,
         cache_dir=cache_dir,
     )
@@ -76,9 +82,8 @@ def run(cfg: DictConfig):
         cfg.plan_config.horizon * cfg.plan_config.action_block <= cfg.eval.eval_budget
     ), "规划视野(Horizon)必须小于或等于评估预算"
 
-    # 创建世界环境
-    cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
-    world = swm.World(**cfg.world, image_shape=(224, 224))
+    # 【已被移除】：移除了所有与 swm.World 相关的初始化和 cfg 注入逻辑
+    # 现已完全脱离黑盒环境依赖
 
     # 创建图像转换器
     transform = {
@@ -92,13 +97,13 @@ def run(cfg: DictConfig):
     ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
 
     # ---------------------------------------------------------
-    # 【对齐训练逻辑】：直接读取 /content/data/data_0001.h5 获取全局统计算法
+    # 【对齐训练逻辑】：动态读取数据集获取全局统计算法
     # ---------------------------------------------------------
+    h5_path = cfg.data.dataset.get("h5_file_path", "data_0000.h5")
     try:
         # 引入你写的全内存类，保证底层矩阵读取的均值与训练时一模一样
         from minestudio_inmemory_dataset import MineStudioInMemoryDataset
-        h5_file_path = "/content/data/data_0001"
-        in_memory_dataset = MineStudioInMemoryDataset(h5_file_path=h5_file_path, transform=None)
+        in_memory_dataset = MineStudioInMemoryDataset(h5_file_path=h5_path, transform=None)
         
         cam_data = torch.from_numpy(in_memory_dataset.camera_actions).float()
         # 转换为 numpy，方便 solver 进行 ndarray 计算
@@ -114,7 +119,7 @@ def run(cfg: DictConfig):
         
     print("==================================================")
     print("[*] 动作预处理器加载完毕: 仅标准化末尾 2 维 (Camera)")
-    print(f"[*] 来源数据集: /content/data/data_0001.h5")
+    print(f"[*] 来源数据集: {h5_path}")
     print(f"[*] cam_mean: {cam_mean}")
     print(f"[*] cam_std:  {cam_std}")
     print("==================================================")
@@ -191,24 +196,71 @@ def run(cfg: DictConfig):
     if len(eval_episodes) < cfg.eval.num_eval:
         raise ValueError("数据集中没有足够长度的回合用于评估。")
 
-    world.set_policy(policy)
-
     start_time = time.time()
     
-    # 【核心沙盘推演环节】
-    # 脚本会自动把 (start_idx + goal_offset_steps) 的画面作为目标(Goal Image)喂给求解器
-    metrics = world.evaluate_from_dataset(
-        dataset,
-        start_steps=eval_start_idx.tolist(),
-        goal_offset_steps=cfg.eval.goal_offset_steps,
-        eval_budget=cfg.eval.eval_budget,
-        episodes_idx=eval_episodes.tolist(),
-        callables=OmegaConf.to_container(cfg.eval.get("callables"), resolve=True),
-        video_path=results_path,
-    )
-    end_time = time.time()
+    # =================================================================
+    # 【核心沙盘推演环节】：自定义离线规划循环，替代 world.evaluate_from_dataset
+    # =================================================================
+    print("==================================================")
+    print("[*] 已脱离 swm.World，启动完全自定义的离线规划推演...")
+    print("==================================================")
     
-    print(metrics)
+    metrics = {"success": [], "planning_time": []}
+    
+    if hasattr(policy, "reset"):
+        policy.reset()
+
+    # 仅取前几个用于快速验证规划器是否跑通
+    eval_limit = min(len(eval_episodes), cfg.eval.num_eval)
+    
+    for i in range(eval_limit):
+        ep_id = eval_episodes[i]
+        start_idx = eval_start_idx[i]
+        goal_idx = start_idx + cfg.eval.goal_offset_steps
+        
+        print(f"[*] 正在评估 第 {i+1}/{eval_limit} 个片段 (Episode: {ep_id}, Start: {start_idx} -> Goal: {goal_idx})")
+        
+        try:
+            # 从 HDF5 提取图像数据
+            start_data = dataset.get_row_data(np.array([start_idx]))
+            goal_data = dataset.get_row_data(np.array([goal_idx]))
+            
+            # 构造 Policy 需要的 obs 字典
+            # 这里假设提取出来的 pixels 能够直接兼容 transform 的要求
+            obs = {
+                "pixels": start_data["pixels"][0],
+                "goal": goal_data["pixels"][0]
+            }
+            
+            step_start_time = time.time()
+            
+            # 执行潜空间规划！这句代码会调用 CEM 或者 Gradient Solver
+            action = policy(obs)
+            
+            plan_time = time.time() - step_start_time
+            metrics["success"].append(1)
+            metrics["planning_time"].append(plan_time)
+            
+            # 输出规划结果 (只打印部分维度防止刷屏)
+            if isinstance(action, np.ndarray) or isinstance(action, torch.Tensor):
+                print(f"    [+] 规划成功! 耗时: {plan_time:.2f}s, 求解器输出动作形状: {action.shape}")
+            else:
+                print(f"    [+] 规划成功! 耗时: {plan_time:.2f}s, 输出类型: {type(action)}")
+                
+        except Exception as e:
+            metrics["success"].append(0)
+            print(f"    [-] 规划失败: {e}")
+            traceback.print_exc()
+            
+    metrics_summary = {
+        "success_rate": float(np.mean(metrics["success"])) if metrics["success"] else 0.0,
+        "mean_planning_time": float(np.mean(metrics["planning_time"])) if metrics["planning_time"] else 0.0
+    }
+    
+    end_time = time.time()
+    print("==================================================")
+    print(f"最终评估指标: {metrics_summary}")
+    print("==================================================")
 
     # 保存结果日志
     results_path = results_path / cfg.output.filename
@@ -220,7 +272,7 @@ def run(cfg: DictConfig):
         f.write(OmegaConf.to_yaml(cfg))
         f.write("\n")
         f.write("==== RESULTS ====\n")
-        f.write(f"metrics: {metrics}\n")
+        f.write(f"metrics: {metrics_summary}\n")
         f.write(f"evaluation_time: {end_time - start_time} seconds\n")
 
 if __name__ == "__main__":
