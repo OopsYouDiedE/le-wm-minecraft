@@ -4,6 +4,15 @@ defaults:
   - data: minecraft
   - _self_
 
+num_workers: 8
+train_split: 0.995
+seed: 3072
+img_size: 224
+patch_size: 14
+encoder_scale: tiny
+dump_object: True
+
+
 world:
   env_name: swm/PushT-v1
   num_envs: ${eval.num_eval}
