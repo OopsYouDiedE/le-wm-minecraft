@@ -13,22 +13,6 @@ encoder_scale: tiny
 dump_object: True
 
 
-world:
-  env_name: swm/PushT-v1
-  num_envs: ${eval.num_eval}
-  max_episode_steps: ??? # make sure it's >= eval_budget
-  history_size: 3
-  frame_skip: 5
-
-dataset:
-  stats: ${eval.dataset_name}
-  keys_to_cache:
-    - action
-    - proprio
-    - state
-
-seed: 42
-policy: random # ckpt name or random
 
 
 wandb:
